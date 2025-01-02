@@ -142,6 +142,31 @@ class MainWindow(QMainWindow):
         self.original_mouse_move = self.preview_scene.mouseMoveEvent
         self.original_mouse_release = self.preview_scene.mouseReleaseEvent
 
+        # 添加缩放相关的变量
+        self.zoom_factor = 1.0
+        self.ctrl_pressed = False
+        
+        # 设置视图的缩放属性
+        self.preview_view.setRenderHint(QPainter.Antialiasing)
+        self.preview_view.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
+        self.preview_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.preview_view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.preview_view.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.preview_view.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
+        
+        # 设置自定义的视图事件处理
+        self.preview_view.mousePressEvent = self.view_mouse_press
+        self.preview_view.mouseMoveEvent = self.view_mouse_move
+        self.preview_view.mouseReleaseEvent = self.view_mouse_release
+        self.preview_view.keyPressEvent = self.view_key_press
+        
+        # 添加拖动相关的变量
+        self.is_panning = False
+        self.last_mouse_pos = None
+
+        # 设置视图属性以支持拖动
+        self.preview_view.setDragMode(QGraphicsView.NoDrag)
+
     def setup_file_table(self):
         """设置文件列表表格"""
         headers = ["文件名", "状态", "问题详情"]
@@ -461,6 +486,13 @@ class MainWindow(QMainWindow):
         # 更新窗口标题
         self.setWindowTitle(f"YOLO 标注检查工具 - {image_path}")
 
+        # 重置缩放和拖动状态
+        self.zoom_factor = 1.0
+        self.preview_view.resetTransform()
+        self.is_panning = False
+        self.last_mouse_pos = None
+        self.preview_view.unsetCursor()
+
     def load_and_show_annotations(self, image_width: int, image_height: int):
         """加载并显示标注框"""
         if not self.current_image:
@@ -507,12 +539,20 @@ class MainWindow(QMainWindow):
                 label_name = self.label_names[box.class_id]
                 label_text = QGraphicsTextItem()
                 label_text.setPlainText(label_name)
-                # 使用标签对应的颜色
                 label_text.setDefaultTextColor(self.label_colors.get(label_name, Qt.white))
-                # 置标签位置（在标注框上方）
-                label_text.setPos(x, y - 20)
+                
+                # 设置初始字体大小
+                font = label_text.font()
+                font.setPointSize(10)
+                label_text.setFont(font)
+                
+                # 计算初始位置，使标签居中并紧贴标注框上边
+                text_rect = label_text.boundingRect()
+                text_x = x + (w - text_rect.width()) / 2  # 水平居中
+                text_y = y - text_rect.height()  # 紧贴标注框上边
+                
+                label_text.setPos(text_x, text_y)
                 self.preview_scene.addItem(label_text)
-                # 将标签与注关联（后续新）
                 editable_box.label_item = label_text
 
     def resizeEvent(self, event):
@@ -544,17 +584,25 @@ class MainWindow(QMainWindow):
 
     def keyPressEvent(self, event):
         """键盘事件处理"""
-        # 如果正在绘制，不处理键盘事件
+        # 处理 Ctrl 键状态
+        if event.key() == Qt.Key_Control:
+            self.ctrl_pressed = True
+            super().keyPressEvent(event)
+            return
+
+        # 如果正在绘制，不处理其他键盘事件
         if self.is_drawing:
             super().keyPressEvent(event)
             return
 
-        # 优先处理 A、D 键切换图片，不考虑焦点位置
+        # 处理 A、D 键切换图片
         if event.key() == Qt.Key_A:
             self.prev_image()
+            event.accept()
             return
         elif event.key() == Qt.Key_D:
             self.next_image()
+            event.accept()
             return
 
         # 其他键盘事件处理
@@ -967,3 +1015,56 @@ class MainWindow(QMainWindow):
         self.total_files_label.setText(f"文件总数: {total_files}")
         self.total_overlaps_label.setText(f"重叠总数: {total_overlaps}")
         self.total_invalid_labels_label.setText(f"无标签总数: {total_invalid_labels}")
+
+    def view_mouse_press(self, event):
+        """预览视图的鼠标按下事件"""
+        if event.button() == Qt.RightButton:
+            self.is_panning = True
+            self.last_mouse_pos = event.pos()
+            self.preview_view.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+        else:
+            # 调用原始的鼠标按下事件处理
+            QGraphicsView.mousePressEvent(self.preview_view, event)
+
+    def view_mouse_move(self, event):
+        """预览视图的鼠标移动事件"""
+        if self.is_panning and self.last_mouse_pos is not None:
+            # 计算鼠标移动的距离
+            delta = event.pos() - self.last_mouse_pos
+            self.last_mouse_pos = event.pos()
+            
+            # 移动视图
+            self.preview_view.horizontalScrollBar().setValue(
+                self.preview_view.horizontalScrollBar().value() - delta.x())
+            self.preview_view.verticalScrollBar().setValue(
+                self.preview_view.verticalScrollBar().value() - delta.y())
+            
+            event.accept()
+        else:
+            # 调用原始的鼠标移动事件处理
+            QGraphicsView.mouseMoveEvent(self.preview_view, event)
+
+    def view_mouse_release(self, event):
+        """预览视图的鼠标释放事件"""
+        if event.button() == Qt.RightButton and self.is_panning:
+            self.is_panning = False
+            self.last_mouse_pos = None
+            self.preview_view.unsetCursor()
+            event.accept()
+        else:
+            # 调用原始的鼠标释放事件处理
+            QGraphicsView.mouseReleaseEvent(self.preview_view, event)
+
+    def view_key_press(self, event):
+        """预览视图的键盘事件处理"""
+        # 处理 A、D 键切换图片
+        if event.key() == Qt.Key_A:
+            self.prev_image()
+            event.accept()
+        elif event.key() == Qt.Key_D:
+            self.next_image()
+            event.accept()
+        else:
+            # 其他键盘事件交给原始的处理方法
+            QGraphicsView.keyPressEvent(self.preview_view, event)
